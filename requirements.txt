@@ -1,0 +1,17 @@
+# --- Web layer ---
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+pydantic-settings==2.7.0
+
+# --- Database (raw SQL, no ORM) ---
+asyncpg==0.30.0
+pgvector==0.3.6          # provides the asyncpg 'vector' type codec
+
+# --- LLM + embeddings ---
+anthropic==0.42.0        # unused until Day 2 (the agentic loop)
+voyageai==0.3.2          # code-optimised embeddings
+
+# --- Frontend (kept as a thin HTTP client) ---
+streamlit==1.41.1
+requests==2.32.3

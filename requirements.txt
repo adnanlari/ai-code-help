@@ -9,7 +9,8 @@ asyncpg==0.30.0
 pgvector==0.3.6          # provides the asyncpg 'vector' type codec
 
 # --- LLM + embeddings ---
-anthropic==0.42.0        # unused until Day 2 (the agentic loop)
+openai==1.59.6           # agent LLM via Kimi's OpenAI-compatible API
+anthropic==0.42.0        # optional alt provider (LLMClient adapter, not wired yet)
 voyageai==0.3.2          # code-optimised embeddings
 
 # --- Frontend (kept as a thin HTTP client) ---

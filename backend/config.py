@@ -24,6 +24,15 @@ class Settings(BaseSettings):
     voyage_api_key: str = ""
     anthropic_api_key: str = ""
 
+    # --- agent LLM (Strategy-selected; see backend/llm) ---
+    llm_provider: str = "kimi"  # key into backend.llm._PROVIDERS
+    llm_temperature: float = 0.0
+    llm_max_tokens: int = 2048
+    # Kimi K2.6 (Moonshot) - OpenAI-compatible endpoint.
+    kimi_api_key: str = ""
+    kimi_base_url: str = "https://api.moonshot.ai/v1"
+    kimi_model: str = "kimi-k2.6"
+
     # --- local scratch space for clones ---
     workdir: str = "./workdir"
 

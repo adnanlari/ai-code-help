@@ -98,8 +98,10 @@ lookup and the race guard: `claim_for_indexing` does
 `INSERT ... ON CONFLICT DO NOTHING RETURNING id`; concurrent first-time requests
 race, one wins the INSERT, the loser gets no row back and re-selects the winner's
 row instead of starting a duplicate embedding job. No locks/queue/Redis — the DB
-constraint is the coordination primitive. A pre-existing `failed` row is reset to
-`indexing` for retry.
+constraint is the coordination primitive. `claim_for_indexing` returns a
+`ClaimOutcome` (`CREATED` / `RECLAIMED` / `IN_PROGRESS` / `READY`); a `failed`
+row, or an `indexing` row whose `claimed_at` is older than `STALE_AFTER`
+(crashed run), is `RECLAIMED` and retried — leftover chunks are deleted first.
 
 ### Data layer — raw SQL, no ORM (deliberate)
 

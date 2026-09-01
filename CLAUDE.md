@@ -24,11 +24,15 @@ per 1M input/output tokens vs. a much higher Claude bill, and Moonshot's prepaid
 "recharge" tiers gate rate limits ($10 recharge → Tier1: 100 RPM, unlimited daily).
 Key: `KIMI_API_KEY` in `.env`.
 
-The loop is built behind a thin `LLMClient` interface (one `run_turn(messages,
-tools)` method) so the provider is swappable — Kimi today, Claude or Gemini via an
-adapter with no change to the agent core. Tool-call signalling is OpenAI-style
-(`finish_reason == "tool_calls"`, a `tool_calls` array), **not** Anthropic's
-`stop_reason` / content blocks.
+The loop is built behind a thin `LLMClient` interface (`backend/llm/base.py`, one
+async `complete(messages, *, tools, ...)` method returning a normalised
+`LLMResponse`) so the provider is swappable — `get_llm_client()` in
+`backend/llm/__init__.py` picks a concrete strategy from `_PROVIDERS` by
+`settings.llm_provider`. `KimiClient` (`backend/llm/kimi.py`) translates our
+neutral `Message`/`ToolSpec` types to/from the OpenAI shape. Tool-call signalling
+is OpenAI-style (`finish_reason == "tool_calls"`, a `tool_calls` array), **not**
+Anthropic's `stop_reason` / content blocks. Adding Claude/Gemini = one
+`LLMClient` subclass + one line in `_PROVIDERS`; the agent loop never changes.
 
 ## Environment
 
@@ -58,30 +62,39 @@ python -m scripts.apply_schema
 python -m scripts.index_repo https://github.com/pallets/click [ref]
 # run twice — second run should report cached=True and make zero embedding calls
 
-# manual similarity query (the Day 1 acceptance demo)
+# manual similarity query (retrieval only, no agent)
 python -m scripts.query_vectors <repo_id> "how are options parsed?"
+
+# wipe a repo's index so it re-indexes from scratch (dev helper)
+python -m scripts.reset_repo <repo_url | repo_id>
 
 # servers
 uvicorn backend.main:app --reload         # API on :8000
 streamlit run frontend/app.py             # UI (expects the API already up)
+
+# full Q&A once the server is up (needs KIMI_API_KEY too):
+curl -s localhost:8000/ask -H 'content-type: application/json' \
+  -d '{"repo_id": "<uuid>", "question": "how does X work?"}' | jq
 ```
 
-Tests run offline (no DB/network). Anything touching Postgres or Voyage needs
-real credentials in `.env` and is exercised via the scripts above, not pytest.
+Tests run offline (no DB / Voyage / git / LLM). Anything touching those needs
+real credentials in `.env` and is exercised via the scripts / HTTP, not pytest.
 
 ## Architecture
 
-### One adaptive pipeline (design target, not yet fully built)
+### One adaptive pipeline
 
 RAG and agentic tool-use are **merged**, not separate modes:
 vector search seeds the top-K chunks → the LLM gets `read_file`/`grep`/`list_dir`
 tools and decides via its `finish_reason` whether to answer or fetch more →
-loop with an iteration cap → answer carries citations verified against what was
-actually retrieved/read → the tool-call sequence is surfaced as a reasoning trace.
+loop with an iteration cap → answer carries citations → the tool-call sequence is
+surfaced as a reasoning trace.
 
-Build status: **Day 1 done** = indexing pipeline + vector store + FastAPI skeleton.
-Day 2 = the tool loop + path-traversal guardrails. Day 3 = citations + trace + chat
-UI. Day 4 = eval harness + cost/latency logging. See `README.md` status table.
+Built: indexing pipeline + vector store; the LLM `LLMClient` strategy layer; the
+file tools + path-traversal guardrail + on-demand worktree; the tool-use loop;
+`POST /ask` wiring it together. Not built yet: programmatic citation
+verification, the reasoning-trace UI (Streamlit is still a placeholder), the eval
+harness, and structured cost/latency logging. See `README.md` for the status table.
 
 ### Indexing pipeline — `backend/indexing/`
 
@@ -99,10 +112,12 @@ exception; clone dir always deleted in `finally`.
 - **chunk.py**: line-window chunking (default 60 lines, 15 overlap). Line numbers
   are the citation anchors; overlap keeps boundary-straddling code intact in one
   chunk. AST-aware chunking is a deferred stretch goal.
-- **embed.py**: Voyage `voyage-code-3`, 1024-dim, `input_type="document"`. The
-  query side uses `input_type="query"` (asymmetric embedding) — currently in
-  `scripts/query_vectors.py`, moves into the agent on Day 2. Blocking SDK calls
-  run via `asyncio.to_thread`; batched ≤128 items with exponential-backoff retry.
+- **embed.py**: Voyage `voyage-code-3`, 1024-dim. `_embed_sync(inputs, input_type)`
+  is shared by `embed_documents` (`"document"`, index side) and `embed_query`
+  (`"query"`, search side) — asymmetric embedding. Blocking SDK calls run via
+  `asyncio.to_thread`; batched ≤128 items / `EMBED_MAX_BATCH_TOKENS`; optional
+  `_RollingLimiter` (`EMBED_RPM`/`EMBED_TPM`, 0 = off) + minute-scale backoff on
+  `RateLimitError`.
 
 ### Caching + concurrency — the core trick
 
@@ -126,12 +141,51 @@ compatibility. All queries live in `backend/store/*_store.py` as functions using
 `$1,$2` positional params. `similarity_search` uses `<=>` (cosine distance),
 returns `1 - distance` as the score, orders ascending so the HNSW index is used.
 
+### Agent / Q&A pipeline — `backend/agent/` + `backend/llm/`
+
+`service.run_qa(repo_id, question, *, top_k, max_iterations)` orchestrates:
+`repos_store.get_by_id` (must be `status='ready'`, else `RepoNotFound` /
+`RepoNotReady`) → `embed.embed_query` (`input_type="query"`) →
+`chunks_store.similarity_search` (the RAG seed, top-K) →
+`workspace.ensure_worktree` (re-materialises the **exact** indexed commit via
+`git init` + `fetch --depth 1 <sha>` + `checkout FETCH_HEAD`, cached under
+`WORKDIR/worktrees/<sha>`; blocking, so run in `asyncio.to_thread`) →
+`tools.ToolBox(repo_root)` + `llm.get_llm_client()` → `loop.run_agent` →
+`QAOutcome`.
+
+- **guardrail.py**: `safe_path(repo_root, user_path)` — the security boundary.
+  The model picks tool paths; this rejects NUL bytes, forces the path relative to
+  the root (a leading `/` can't escape), `Path.resolve()`s it (collapses `..`,
+  expands symlinks), and requires containment under the root. Runs on every tool
+  call.
+- **tools.py**: `read_file` / `grep` / `list_dir` as provider-neutral `ToolSpec`s
+  + a `ToolBox` dispatcher. Every tool returns a **string** (errors as
+  `"error: ..."`, never raised — the model reads and self-corrects). Outputs are
+  line/byte/match capped so a tool result can't blow the context window.
+  `grep`/`list_dir` reuse `filter.SKIP_DIRS` + `is_source_file` so the agent sees
+  the same repo slice that was indexed. `ToolBox.run` is async (fs work via
+  `to_thread`), returns `ToolResult(name, ok, content)`.
+- **loop.py**: `run_agent(*, question, hits, toolbox, llm, max_iterations)` — the
+  hand-rolled tool-use loop. Seed = system prompt + question + formatted
+  excerpts. Each pass: `llm.complete(messages, tools=specs)` → append the
+  assistant turn → if `resp.wants_tools`, run each via `ToolBox`, append
+  `role="tool"` messages, record a `TraceStep`, loop → else the text is the
+  answer. On hitting the cap, one final `complete(..., tools=())` forces an
+  answer. Returns `AgentResult` (`answer`, `trace`, summed `Usage`, `iterations`,
+  `stop_reason`, full `messages`). Provider- and repo-agnostic — depends only on
+  `LLMClient` + `ToolBox`; tests drive it with a scripted fake LLM.
+- **`agent_max_iterations`** (config, default 6) is the cost brake — each pass is
+  a paid LLM call.
+
 ### API — `backend/main.py`
 
 FastAPI with a `lifespan` that opens/closes the pool. Endpoints: `GET /health`
 (DB ping), `POST /index` (runs the full pipeline **synchronously** — a job queue
-is the noted production upgrade), `GET /repos/{repo_id}`. Request/response models
-in `backend/models.py`.
+is the noted production upgrade), `GET /repos/{repo_id}`, `POST /ask` (calls
+`run_qa`; maps `QAOutcome` → `AskResponse` = answer + `stop_reason` + iterations
++ token `usage` + `retrieved` chunks + tool `trace`; 404 / 409 / 502 for
+not-found / not-ready / git+LLM failures). Also synchronous — the request blocks
+for the whole tool loop. Request/response models in `backend/models.py`.
 
 ### Frontend — `frontend/app.py`
 

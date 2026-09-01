@@ -4,11 +4,11 @@ Point it at a public GitHub repo and ask questions about the codebase. An agent
 plans, retrieves, reads across files, and answers **with citations** you can
 check.
 
-This is a learning + portfolio project built over ~4 days. The skills it
-exercises — multi-document reasoning, tool use, grounded answers, evals — are
-the transferable part; the codebase just stands in for a corpus of documents.
+This is a compact learning + portfolio project. The skills it exercises —
+multi-document reasoning, tool use, grounded answers, evals — are the
+transferable part; the codebase just stands in for a corpus of documents.
 
-## Architecture (target)
+## Architecture
 
 One adaptive pipeline, not "RAG mode vs. agent mode":
 
@@ -23,12 +23,18 @@ One adaptive pipeline, not "RAG mode vs. agent mode":
 
 ## Status
 
-| Day | Scope | State |
-|-----|-------|-------|
-| 1 | Scaffold, clone/filter/chunk/embed pipeline, Supabase + pgvector schema, FastAPI skeleton | **done** |
-| 2 | RAG-seeded agentic tool loop, path-traversal guardrails, iteration cap | — |
-| 3 | Citations + grounding check, reasoning trace, Streamlit chat UI | — |
-| 4 | Eval harness (golden set + LLM-as-judge), latency/cost logging, README writeup | — |
+| Component | State |
+|-----------|-------|
+| Indexing pipeline (clone → filter → chunk → embed → store) + `(repo_url, commit_sha)` cache | ✅ |
+| Vector store (Supabase pgvector) + manual similarity query | ✅ |
+| `LLMClient` provider strategy layer (Kimi K2.6, OpenAI-compatible) | ✅ |
+| File tools (`read_file` / `grep` / `list_dir`) + path-traversal guardrail + on-demand worktree | ✅ |
+| RAG-seeded agentic tool-use loop + iteration cap | ✅ |
+| `POST /ask` — retrieval → worktree → agent → answer + trace + token usage | ✅ |
+| Programmatic citation verification | ⬜ next |
+| Reasoning-trace UI (Streamlit chat) | ⬜ next |
+| Eval harness (golden set + retrieval overlap + LLM-as-judge) | ⬜ |
+| Structured cost / latency / iteration logging (JSON lines) | ⬜ |
 
 ## Stack
 
@@ -80,12 +86,20 @@ python -m scripts.index_repo https://github.com/pallets/click
 
 # 5. run it again -> cached=True, zero embedding calls
 
-# 6. query the vector store (Day 1 acceptance demo)
+# 6. retrieval only — top-K chunks for a query, no agent
 python -m scripts.query_vectors <repo_id> "how are options parsed?"
+
+# 7. full Q&A through the agent loop (needs KIMI_API_KEY)
+curl -s localhost:8000/ask -H 'content-type: application/json' \
+  -d '{"repo_id": "<repo_id>", "question": "how are options parsed?"}' | jq
 
 # optional UI
 streamlit run frontend/app.py
 ```
+
+`POST /ask` returns the `answer`, the `retrieved` chunks (the RAG seed), the
+`trace` (every tool call the agent made), `iterations`, `stop_reason`, and token
+`usage`. It runs synchronously — the request blocks for the whole tool loop.
 
 ## Dev
 
@@ -101,22 +115,33 @@ backend/
   config.py            typed settings from .env
   db.py                asyncpg pool + pgvector codec registration
   models.py            Pydantic API models
-  main.py              FastAPI app (/health, /index, /repos/{id})
+  main.py              FastAPI app (/health, /index, /repos/{id}, /ask)
   indexing/
     clone.py           resolve SHA via `git ls-remote`, shallow clone, cleanup
-    filter.py          denylist + binary sniff + size cap
+    filter.py          denylist + binary sniff + size cap; is_source_file()
     chunk.py           line-window chunking with overlap
-    embed.py           Voyage batch embedding (input_type="document")
+    embed.py           Voyage embeddings: embed_documents() + embed_query()
     pipeline.py        cache-check -> clone -> filter -> chunk -> embed -> store
+  llm/
+    base.py            LLMClient interface + neutral Message/ToolSpec/LLMResponse
+    kimi.py            KimiClient (OpenAI-compatible) — Message <-> OpenAI shape
+    __init__.py        _PROVIDERS registry + get_llm_client()
+  agent/
+    guardrail.py       safe_path() — path-traversal defence for tool paths
+    tools.py           read_file / grep / list_dir + ToolBox dispatcher
+    workspace.py       ensure_worktree() — re-materialise the indexed commit
+    loop.py            run_agent() — the hand-rolled tool-use loop
+    service.py         run_qa() — retrieval + worktree + loop orchestration
   store/
-    repos_store.py     claim_for_indexing (race guard + stale reclaim), mark_ready/failed
+    repos_store.py     claim_for_indexing (race guard + stale reclaim), get_by_id
     chunks_store.py    bulk insert, cosine similarity_search, delete_for_repo
 scripts/
   apply_schema.py      run migrations/*.sql in order
   index_repo.py        index one repo from the CLI
-  query_vectors.py     manual similarity query
+  query_vectors.py     manual similarity query (retrieval only)
   reset_repo.py        wipe a repo's index (dev helper)
 frontend/app.py        Streamlit placeholder
 migrations/            0001_init.sql, 0002_repo_claimed_at.sql
-tests/                 chunk, filter, embed-batching unit tests
+tests/                 offline: chunk, filter, embed batching, llm translation,
+                       guardrail, tools, agent loop, agent service
 ```

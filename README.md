@@ -13,8 +13,8 @@ the transferable part; the codebase just stands in for a corpus of documents.
 One adaptive pipeline, not "RAG mode vs. agent mode":
 
 1. **RAG seeds context** — vector search pulls the top-K relevant chunks for the question.
-2. **The agent decides if that's enough** — Claude has tools (`read_file`, `grep`, `list_dir`)
-   and uses its own `stop_reason` to answer now or fetch more.
+2. **The agent decides if that's enough** — the LLM has tools (`read_file`, `grep`, `list_dir`)
+   and uses its `finish_reason` to answer now or fetch more.
 3. **Tool loop** — tool result is appended to the conversation; repeat, capped at a max
    iteration count (tuned from eval data, not guessed).
 4. **Citations** — every answer cites file/line spans, verified programmatically against what
@@ -25,7 +25,7 @@ One adaptive pipeline, not "RAG mode vs. agent mode":
 
 | Day | Scope | State |
 |-----|-------|-------|
-| 1 | Scaffold, clone/filter/chunk/embed pipeline, Supabase + pgvector schema, FastAPI skeleton | **in progress** |
+| 1 | Scaffold, clone/filter/chunk/embed pipeline, Supabase + pgvector schema, FastAPI skeleton | **done** |
 | 2 | RAG-seeded agentic tool loop, path-traversal guardrails, iteration cap | — |
 | 3 | Citations + grounding check, reasoning trace, Streamlit chat UI | — |
 | 4 | Eval harness (golden set + LLM-as-judge), latency/cost logging, README writeup | — |
@@ -33,7 +33,9 @@ One adaptive pipeline, not "RAG mode vs. agent mode":
 ## Stack
 
 - **Python** throughout. **FastAPI** (async) backend, **Streamlit** frontend (thin HTTP client).
-- **Anthropic API** (`claude-sonnet-5`), raw `anthropic` SDK — tool loop built by hand, no agent framework.
+- **Kimi K2.6** (Moonshot) as the agent LLM, via its **OpenAI-compatible** API (`openai` SDK
+  pointed at Kimi's `base_url`) — tool loop built by hand, no agent framework. Chosen for cost;
+  the loop sits behind a thin `LLMClient` interface so the provider (Claude, Gemini, …) is swappable.
 - **Voyage AI** `voyage-code-3` embeddings (1024-dim, cosine).
 - **Supabase Postgres + pgvector**, accessed with **raw SQL over `asyncpg`** (no ORM — deliberate, to build SQL fluency).
 
@@ -55,7 +57,7 @@ clone dirs are disposable and removed right after embedding.
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements-dev.txt        # runtime + dev deps
-cp .env.example .env                        # then fill in DATABASE_URL + VOYAGE_API_KEY
+cp .env.example .env                        # then fill in DATABASE_URL, VOYAGE_API_KEY, KIMI_API_KEY
 ```
 
 `DATABASE_URL` is the Supabase connection URI (Project Settings → Database → Connection string,
@@ -107,13 +109,14 @@ backend/
     embed.py           Voyage batch embedding (input_type="document")
     pipeline.py        cache-check -> clone -> filter -> chunk -> embed -> store
   store/
-    repos_store.py     get-or-create (race guard), mark_ready/failed
-    chunks_store.py    bulk insert, cosine similarity_search
+    repos_store.py     claim_for_indexing (race guard + stale reclaim), mark_ready/failed
+    chunks_store.py    bulk insert, cosine similarity_search, delete_for_repo
 scripts/
-  apply_schema.py      run migrations/*.sql
+  apply_schema.py      run migrations/*.sql in order
   index_repo.py        index one repo from the CLI
   query_vectors.py     manual similarity query
+  reset_repo.py        wipe a repo's index (dev helper)
 frontend/app.py        Streamlit placeholder
-migrations/0001_init.sql
-tests/                 chunk + filter unit tests
+migrations/            0001_init.sql, 0002_repo_claimed_at.sql
+tests/                 chunk, filter, embed-batching unit tests
 ```

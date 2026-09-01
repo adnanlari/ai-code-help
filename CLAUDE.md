@@ -11,10 +11,24 @@ The codebase stands in for a document corpus — the transferable skills are
 multi-document reasoning, hand-built tool-use loops, grounded answers, and evals.
 
 **This is built to be understood, not just to work.** Prefer hand-rolled
-mechanisms over frameworks that hide them (no LangChain/LlamaIndex; the
-`anthropic` SDK is used directly). When adding to the tool-use loop, RAG, chunking,
-or the eval harness, keep the reasoning explicit in comments/docstrings — the
-owner needs to defend every design choice in an interview.
+mechanisms over frameworks that hide them (no LangChain/LlamaIndex; the LLM SDK
+is called directly and the tool-use loop is written by hand). When adding to the
+tool-use loop, RAG, chunking, or the eval harness, keep the reasoning explicit in
+comments/docstrings — the owner needs to defend every design choice in an interview.
+
+## LLM provider
+
+The agent LLM is **Kimi K2.6** (Moonshot), called through its **OpenAI-compatible**
+API with the `openai` SDK pointed at Kimi's `base_url`. Chosen for cost: ~$0.55/$2.65
+per 1M input/output tokens vs. a much higher Claude bill, and Moonshot's prepaid
+"recharge" tiers gate rate limits ($10 recharge → Tier1: 100 RPM, unlimited daily).
+Key: `KIMI_API_KEY` in `.env`.
+
+The loop is built behind a thin `LLMClient` interface (one `run_turn(messages,
+tools)` method) so the provider is swappable — Kimi today, Claude or Gemini via an
+adapter with no change to the agent core. Tool-call signalling is OpenAI-style
+(`finish_reason == "tool_calls"`, a `tool_calls` array), **not** Anthropic's
+`stop_reason` / content blocks.
 
 ## Environment
 
@@ -60,8 +74,8 @@ real credentials in `.env` and is exercised via the scripts above, not pytest.
 ### One adaptive pipeline (design target, not yet fully built)
 
 RAG and agentic tool-use are **merged**, not separate modes:
-vector search seeds the top-K chunks → Claude gets `read_file`/`grep`/`list_dir`
-tools and decides via its own `stop_reason` whether to answer or fetch more →
+vector search seeds the top-K chunks → the LLM gets `read_file`/`grep`/`list_dir`
+tools and decides via its `finish_reason` whether to answer or fetch more →
 loop with an iteration cap → answer carries citations verified against what was
 actually retrieved/read → the tool-call sequence is surfaced as a reasoning trace.
 

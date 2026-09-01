@@ -79,14 +79,21 @@ python -m scripts.apply_schema
 uvicorn backend.main:app --reload
 
 # 3. health check
-curl localhost:8000/health          # -> {"status":"ok","db":"ok"}
+curl -s localhost:8000/health | jq          # -> {"status":"ok","db":"ok"}
 
-# 4. index a small repo (CLI path, no server needed)
-python -m scripts.index_repo https://github.com/pallets/click
+# 4. index a repo via the API (clone -> filter -> chunk -> embed -> store)
+curl -s localhost:8000/index -H 'content-type: application/json' \
+  -d '{"repo_url": "https://github.com/pallets/click"}' | jq
+# -> {"repo_id": "...", "commit_sha": "...", "status": "ready",
+#     "cached": false, "chunk_count": 312}
+#
+# same call again -> "cached": true, zero embedding calls
+# (CLI equivalent, no server needed: python -m scripts.index_repo <repo_url> [ref])
 
-# 5. run it again -> cached=True, zero embedding calls
+# 5. check indexing status
+curl -s localhost:8000/repos/<repo_id> | jq
 
-# 6. retrieval only — top-K chunks for a query, no agent
+# 6. retrieval only — top-K chunks for a query, no agent (CLI)
 python -m scripts.query_vectors <repo_id> "how are options parsed?"
 
 # 7. full Q&A through the agent loop (needs KIMI_API_KEY)
@@ -97,9 +104,67 @@ curl -s localhost:8000/ask -H 'content-type: application/json' \
 streamlit run frontend/app.py
 ```
 
-`POST /ask` returns the `answer`, the `retrieved` chunks (the RAG seed), the
-`trace` (every tool call the agent made), `iterations`, `stop_reason`, and token
-`usage`. It runs synchronously — the request blocks for the whole tool loop.
+## API
+
+Base URL `http://localhost:8000`. All request/response bodies are JSON; models
+live in `backend/models.py`. Interactive docs at `/docs` when the server is up.
+
+### `GET /health`
+Liveness + DB ping. → `{ "status": "ok", "db": "ok" | "error" }`
+
+### `POST /index`
+Index a public repo (or return the cache hit). Runs the whole pipeline
+**synchronously** — the request blocks until indexing finishes.
+
+Request:
+| field | type | required | notes |
+|-------|------|----------|-------|
+| `repo_url` | string | yes | HTTPS git URL of a public repo |
+| `ref` | string | no | branch / tag / commit SHA (default `HEAD`) |
+
+Response `200`:
+```json
+{ "repo_id": "uuid", "commit_sha": "sha", "status": "ready" | "indexing" | "failed",
+  "cached": false, "chunk_count": 312 }
+```
+`cached: true` means it was already indexed at that commit — no clone, no embeddings.
+`status: "indexing"` means another request is already building it. `400` on a git error.
+
+### `GET /repos/{repo_id}`
+Indexing status for one repo.
+→ `{ "repo_id", "repo_url", "commit_sha", "status", "indexed_at": "ts|null", "chunk_count" }`
+`404` if unknown.
+
+### `POST /ask`
+Ask a question about an already-indexed repo. Vector search seeds the top-K
+chunks, then the agent loop (tools: `read_file` / `grep` / `list_dir`) runs until
+it answers or hits the iteration cap. **Synchronous** — blocks for the whole loop.
+Needs `KIMI_API_KEY`.
+
+Request:
+| field | type | required | notes |
+|-------|------|----------|-------|
+| `repo_id` | uuid | yes | from `POST /index` |
+| `question` | string | yes | non-empty |
+| `top_k` | int | no | retrieval size (1–20; default `TOP_K`, 5) |
+| `max_iterations` | int | no | tool-loop cap (1–12; default `AGENT_MAX_ITERATIONS`, 6) |
+
+Response `200`:
+```json
+{
+  "repo_id": "uuid",
+  "question": "...",
+  "answer": "... with path:line citations ...",
+  "stop_reason": "answered" | "max_iterations" | "empty_response",
+  "iterations": 3,
+  "usage": { "input_tokens": 8123, "output_tokens": 412, "total_tokens": 8535 },
+  "retrieved": [ { "file_path": "src/x.py", "start_line": 60, "end_line": 119, "score": 0.71 } ],
+  "trace": [ { "index": 1, "tool": "grep", "arguments": { "pattern": "..." },
+              "ok": true, "result_preview": "...", "result_chars": 842 } ]
+}
+```
+`retrieved` is the RAG seed; `trace` is every tool call the agent made.
+Errors: `404` repo unknown · `409` repo not `ready` · `502` git checkout or LLM provider failure.
 
 ## Dev
 

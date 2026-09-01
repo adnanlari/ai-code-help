@@ -31,7 +31,7 @@ One adaptive pipeline, not "RAG mode vs. agent mode":
 | File tools (`read_file` / `grep` / `list_dir`) + path-traversal guardrail + on-demand worktree | ✅ |
 | RAG-seeded agentic tool-use loop + iteration cap | ✅ |
 | `POST /ask` — retrieval → worktree → agent → answer + trace + token usage | ✅ |
-| Programmatic citation verification | ⬜ next |
+| Programmatic citation grounding (flag-only: `verified` / `unverified_lines` / `unverified_file`) | ✅ |
 | Reasoning-trace UI (Streamlit chat) | ⬜ next |
 | Eval harness (golden set + retrieval overlap + LLM-as-judge) | ⬜ |
 | Structured cost / latency / iteration logging (JSON lines) | ⬜ |
@@ -160,10 +160,23 @@ Response `200`:
   "usage": { "input_tokens": 8123, "output_tokens": 412, "total_tokens": 8535 },
   "retrieved": [ { "file_path": "src/x.py", "start_line": 60, "end_line": 119, "score": 0.71 } ],
   "trace": [ { "index": 1, "tool": "grep", "arguments": { "pattern": "..." },
-              "ok": true, "result_preview": "...", "result_chars": 842 } ]
+              "ok": true, "result_preview": "...", "result_chars": 842 } ],
+  "grounded": true,
+  "citations": [ { "raw": "src/x.py:72", "file_path": "src/x.py", "start_line": 72,
+                   "end_line": 72, "status": "verified" } ]
 }
 ```
 `retrieved` is the RAG seed; `trace` is every tool call the agent made.
+
+**Citation grounding.** Every `path:line` reference in `answer` is checked against
+what the agent was actually shown (retrieved chunks + lines it read via
+`read_file`/`grep`). Each is tagged `verified`, `unverified_lines` (right file,
+lines never seen), or `unverified_file` (never retrieved or read — likely
+fabricated). `grounded` is `true` only when the answer has at least one citation
+and all of them are `verified`. This is **flag-only**: a failed citation is
+reported, not auto-corrected by re-prompting the model — deterministic, no extra
+token cost, and the reader decides. (Rationale in `backend/agent/citations.py`.)
+
 Errors: `404` repo unknown · `409` repo not `ready` · `502` git checkout or LLM provider failure.
 
 ## Dev
@@ -196,7 +209,8 @@ backend/
     tools.py           read_file / grep / list_dir + ToolBox dispatcher
     workspace.py       ensure_worktree() — re-materialise the indexed commit
     loop.py            run_agent() — the hand-rolled tool-use loop
-    service.py         run_qa() — retrieval + worktree + loop orchestration
+    citations.py       verify_answer() — flag-only citation grounding
+    service.py         run_qa() — retrieval + worktree + loop + grounding
   store/
     repos_store.py     claim_for_indexing (race guard + stale reclaim), get_by_id
     chunks_store.py    bulk insert, cosine similarity_search, delete_for_repo
@@ -208,5 +222,5 @@ scripts/
 frontend/app.py        Streamlit placeholder
 migrations/            0001_init.sql, 0002_repo_claimed_at.sql
 tests/                 offline: chunk, filter, embed batching, llm translation,
-                       guardrail, tools, agent loop, agent service
+                       guardrail, tools, agent loop, agent service, citations
 ```

@@ -21,6 +21,7 @@ import logging
 from dataclasses import dataclass
 from uuid import UUID
 
+from backend.agent.citations import GroundingReport, verify_answer
 from backend.agent.loop import AgentResult, run_agent
 from backend.agent.tools import ToolBox
 from backend.agent.workspace import ensure_worktree
@@ -51,6 +52,7 @@ class QAOutcome:
     question: str
     hits: list[Hit]
     result: AgentResult
+    grounding: GroundingReport  # citations in the answer, verified vs. fabricated
 
 
 async def run_qa(
@@ -94,4 +96,22 @@ async def run_qa(
         llm=llm,
         max_iterations=max_iter,
     )
-    return QAOutcome(repo_id=repo_id, question=question, hits=hits, result=result)
+
+    # Grounding check: are the answer's path:line citations backed by code the
+    # agent was actually shown? Flag-only - see backend/agent/citations.py.
+    grounding = verify_answer(result.answer, hits, result.messages)
+    if not grounding.grounded:
+        log.warning(
+            "qa: repo=%s ungrounded answer (%d/%d citations unverified)",
+            repo_id,
+            grounding.unverified_count,
+            len(grounding.citations),
+        )
+
+    return QAOutcome(
+        repo_id=repo_id,
+        question=question,
+        hits=hits,
+        result=result,
+        grounding=grounding,
+    )

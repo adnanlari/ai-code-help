@@ -71,6 +71,14 @@ class UsageModel(BaseModel):
     total_tokens: int
 
 
+class CitationModel(BaseModel):
+    raw: str  # the citation as it appears in the answer, e.g. "src/x.py:60-119"
+    file_path: str
+    start_line: int  # 0 => file-level citation, no line span given
+    end_line: int
+    status: str  # verified | unverified_lines | unverified_file
+
+
 class AskResponse(BaseModel):
     repo_id: UUID
     question: str
@@ -80,3 +88,5 @@ class AskResponse(BaseModel):
     usage: UsageModel
     retrieved: list[RetrievedChunk]  # the RAG seed
     trace: list[TraceStepModel]  # the tool-call sequence
+    grounded: bool  # >=1 citation in the answer and every one verified
+    citations: list[CitationModel]  # per-citation verification verdicts

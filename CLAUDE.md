@@ -92,8 +92,8 @@ surfaced as a reasoning trace.
 
 Built: indexing pipeline + vector store; the LLM `LLMClient` strategy layer; the
 file tools + path-traversal guardrail + on-demand worktree; the tool-use loop;
-`POST /ask` wiring it together. Not built yet: programmatic citation
-verification, the reasoning-trace UI (Streamlit is still a placeholder), the eval
+programmatic citation grounding (flag-only); `POST /ask` wiring it together. Not
+built yet: the reasoning-trace UI (Streamlit is still a placeholder), the eval
 harness, and structured cost/latency logging. See `README.md` for the status table.
 
 ### Indexing pipeline — `backend/indexing/`
@@ -176,6 +176,16 @@ returns `1 - distance` as the score, orders ascending so the HNSW index is used.
   `LLMClient` + `ToolBox`; tests drive it with a scripted fake LLM.
 - **`agent_max_iterations`** (config, default 6) is the cost brake — each pass is
   a paid LLM call.
+- **citations.py**: after the loop, `verify_answer(answer, hits, messages)`
+  extracts `path:line` citations and checks each against the **evidence set** —
+  retrieved chunk spans + the exact lines shown by `read_file`/`grep` (parsed
+  back out of the tool-result messages) + `list_dir` names (existence only). Each
+  citation is tagged `verified` / `unverified_lines` / `unverified_file`;
+  `grounded` = ≥1 citation and none unverified. **Flag-only by design** — a bad
+  citation is reported (`GroundingReport` → `AskResponse.grounded` + `citations`),
+  never bounced back to the model for a self-correction retry. Rationale (cost,
+  determinism, read-only tool) is in the module docstring; the structured return
+  leaves a retry policy addable later without touching this module.
 
 ### API — `backend/main.py`
 
@@ -183,9 +193,10 @@ FastAPI with a `lifespan` that opens/closes the pool. Endpoints: `GET /health`
 (DB ping), `POST /index` (runs the full pipeline **synchronously** — a job queue
 is the noted production upgrade), `GET /repos/{repo_id}`, `POST /ask` (calls
 `run_qa`; maps `QAOutcome` → `AskResponse` = answer + `stop_reason` + iterations
-+ token `usage` + `retrieved` chunks + tool `trace`; 404 / 409 / 502 for
-not-found / not-ready / git+LLM failures). Also synchronous — the request blocks
-for the whole tool loop. Request/response models in `backend/models.py`.
++ token `usage` + `retrieved` chunks + tool `trace` + `grounded` + per-citation
+`citations`; 404 / 409 / 502 for not-found / not-ready / git+LLM failures). Also
+synchronous — the request blocks for the whole tool loop. Request/response models
+in `backend/models.py`.
 
 ### Frontend — `frontend/app.py`
 

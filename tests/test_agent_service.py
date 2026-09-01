@@ -74,6 +74,9 @@ async def test_happy_path_returns_outcome(wired):
     assert out.result.answer == "the answer (a.py:1-2)"
     assert out.result.stop_reason == "answered"
     assert out.result.usage.total_tokens == 18
+    # "a.py:1-2" is cited and matches the retrieved chunk span -> grounded
+    assert out.grounding.grounded is True
+    assert [c.status for c in out.grounding.citations] == ["verified"]
 
 
 async def test_unknown_repo_raises(wired):

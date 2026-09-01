@@ -16,6 +16,7 @@ from backend.llm import LLMError
 from backend.models import (
     AskRequest,
     AskResponse,
+    CitationModel,
     HealthResponse,
     IndexRequest,
     IndexResponse,
@@ -118,6 +119,17 @@ async def ask(req: AskRequest) -> AskResponse:
                 result_chars=s.result_chars,
             )
             for s in r.trace
+        ],
+        grounded=outcome.grounding.grounded,
+        citations=[
+            CitationModel(
+                raw=c.raw,
+                file_path=c.file_path,
+                start_line=c.start_line,
+                end_line=c.end_line,
+                status=c.status,
+            )
+            for c in outcome.grounding.citations
         ],
     )
 

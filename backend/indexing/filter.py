@@ -49,6 +49,8 @@ SKIP_DIRS = {
 }
 
 SKIP_FILENAMES = {
+    ".DS_Store",
+    "Thumbs.db",
     "package-lock.json",
     "yarn.lock",
     "pnpm-lock.yaml",
@@ -144,22 +146,33 @@ def _looks_binary(path: Path) -> bool:
     return False
 
 
+def is_source_file(path: Path) -> bool:
+    """True if `path` is a plain-text source file we'd index: not a lockfile, not a
+    known binary/asset extension, under the size cap, and not binary on sniff.
+
+    Does NOT check parent directories - callers doing their own tree walk prune
+    SKIP_DIRS themselves. Shared by the indexer and the agent's grep/list_dir
+    tools so both see the same view of the repo.
+    """
+    if not path.is_file() or path.is_symlink():
+        return False
+    if path.name in SKIP_FILENAMES or _has_skipped_suffix(path.name):
+        return False
+    try:
+        if path.stat().st_size > MAX_FILE_BYTES:
+            return False
+    except OSError:
+        return False
+    return not _looks_binary(path)
+
+
 def iter_source_files(root: Path) -> Iterator[tuple[Path, str]]:
     """Yield (absolute_path, repo_relative_posix_path) for each keepable file."""
     root = root.resolve()
     for path in sorted(root.rglob("*")):
-        if not path.is_file() or path.is_symlink():
-            continue
         rel_parts = path.relative_to(root).parts
         if any(part in SKIP_DIRS for part in rel_parts[:-1]):
             continue
-        if path.name in SKIP_FILENAMES or _has_skipped_suffix(path.name):
-            continue
-        try:
-            if path.stat().st_size > MAX_FILE_BYTES:
-                continue
-        except OSError:
-            continue
-        if _looks_binary(path):
+        if not is_source_file(path):
             continue
         yield path, "/".join(rel_parts)

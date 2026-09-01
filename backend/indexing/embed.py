@@ -22,6 +22,11 @@ no-payment-method free tier is a punishing 3 RPM / 10k TPM. So we:
     60-second window (set them to 0 to disable, the default),
   * retry a RateLimitError with long minute-scale backoff, since the free tier's
     window is per-minute.
+
+`embed_documents` (input_type="document") is the index side. `embed_query`
+(input_type="query") is the search side - the agent embeds the user's question
+with it before the vector lookup. Same model, same rate limiting, different
+instruction prefix (asymmetric embedding, see above).
 """
 
 from __future__ import annotations
@@ -116,19 +121,21 @@ def _get_limiter() -> _RollingLimiter:
     return _limiter
 
 
-def _embed_batch_sync(batch: list[str]) -> list[list[float]]:
+def _embed_sync(inputs: list[str], input_type: str) -> list[list[float]]:
+    """One Voyage request, with rate-limit throttle + retry. Shared by the
+    document (index) and query (search) paths - only input_type differs."""
     settings = get_settings()
     client = _get_client()
     limiter = _get_limiter()
-    batch_tokens = sum(_est_tokens(t) for t in batch)
+    req_tokens = sum(_est_tokens(t) for t in inputs)
 
     for attempt in range(1, _MAX_RETRIES + 1):
-        limiter.acquire(batch_tokens)
+        limiter.acquire(req_tokens)
         try:
             resp = client.embed(
-                batch,
+                inputs,
                 model=settings.embed_model,
-                input_type="document",
+                input_type=input_type,
                 output_dimension=settings.embed_dim,
             )
             return resp.embeddings
@@ -149,13 +156,20 @@ def _embed_batch_sync(batch: list[str]) -> list[list[float]]:
 
 
 async def embed_documents(texts: list[str]) -> list[list[float]]:
-    """Embed chunk texts, preserving input order. Blocking SDK calls run in a
-    worker thread so the event loop stays free."""
+    """Embed chunk texts for indexing (input_type="document"), preserving input
+    order. Blocking SDK calls run in a worker thread so the event loop stays free."""
     if not texts:
         return []
     max_batch_tokens = get_settings().embed_max_batch_tokens
     out: list[list[float]] = []
     for batch in _batches(texts, max_batch_tokens):
-        vectors = await asyncio.to_thread(_embed_batch_sync, batch)
+        vectors = await asyncio.to_thread(_embed_sync, batch, "document")
         out.extend(vectors)
     return out
+
+
+async def embed_query(text: str) -> list[float]:
+    """Embed a search query (input_type="query") - the asymmetric counterpart to
+    embed_documents. Returns a single vector."""
+    vectors = await asyncio.to_thread(_embed_sync, [text], "query")
+    return vectors[0]

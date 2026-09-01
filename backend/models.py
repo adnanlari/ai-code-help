@@ -37,3 +37,46 @@ class RepoStatusResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     db: str
+
+
+# --- /ask ------------------------------------------------------------------
+
+
+class AskRequest(BaseModel):
+    repo_id: UUID
+    question: str = Field(..., min_length=1)
+    top_k: int | None = Field(None, ge=1, le=20, description="override retrieval size")
+    max_iterations: int | None = Field(None, ge=1, le=12, description="override tool-loop cap")
+
+
+class RetrievedChunk(BaseModel):
+    file_path: str
+    start_line: int
+    end_line: int
+    score: float
+
+
+class TraceStepModel(BaseModel):
+    index: int
+    tool: str
+    arguments: dict
+    ok: bool
+    result_preview: str
+    result_chars: int
+
+
+class UsageModel(BaseModel):
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+
+
+class AskResponse(BaseModel):
+    repo_id: UUID
+    question: str
+    answer: str
+    stop_reason: str  # answered | max_iterations | empty_response
+    iterations: int
+    usage: UsageModel
+    retrieved: list[RetrievedChunk]  # the RAG seed
+    trace: list[TraceStepModel]  # the tool-call sequence

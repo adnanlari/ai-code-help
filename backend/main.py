@@ -1,7 +1,4 @@
-"""FastAPI application: health, index, repo-status.
-
-Day 1 surface only. The agentic Q&A endpoint arrives on Day 2-3.
-"""
+"""FastAPI application: health, index, repo-status, ask."""
 
 from __future__ import annotations
 
@@ -12,13 +9,20 @@ from uuid import UUID
 from fastapi import FastAPI, HTTPException
 
 from backend import db
+from backend.agent.service import RepoNotFound, RepoNotReady, run_qa
 from backend.indexing.clone import GitError
 from backend.indexing.pipeline import index_repo
+from backend.llm import LLMError
 from backend.models import (
+    AskRequest,
+    AskResponse,
     HealthResponse,
     IndexRequest,
     IndexResponse,
     RepoStatusResponse,
+    RetrievedChunk,
+    TraceStepModel,
+    UsageModel,
 )
 from backend.store import chunks_store
 
@@ -57,6 +61,64 @@ async def index(req: IndexRequest) -> IndexResponse:
         status=result.status,
         cached=result.cached,
         chunk_count=result.chunk_count,
+    )
+
+
+@app.post("/ask", response_model=AskResponse)
+async def ask(req: AskRequest) -> AskResponse:
+    """Answer a question about an already-indexed repo via the RAG-seeded agent loop.
+
+    Runs synchronously (like /index): the request blocks for the whole tool loop.
+    Production would stream the trace / move this to a task + websocket.
+    """
+    try:
+        outcome = await run_qa(
+            req.repo_id,
+            req.question,
+            top_k=req.top_k,
+            max_iterations=req.max_iterations,
+        )
+    except RepoNotFound as exc:
+        raise HTTPException(status_code=404, detail="repo not found") from exc
+    except RepoNotReady as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except GitError as exc:
+        raise HTTPException(status_code=502, detail=f"could not check out repo: {exc}") from exc
+    except LLMError as exc:
+        raise HTTPException(status_code=502, detail=f"LLM provider error: {exc}") from exc
+
+    r = outcome.result
+    return AskResponse(
+        repo_id=outcome.repo_id,
+        question=outcome.question,
+        answer=r.answer,
+        stop_reason=r.stop_reason,
+        iterations=r.iterations,
+        usage=UsageModel(
+            input_tokens=r.usage.input_tokens,
+            output_tokens=r.usage.output_tokens,
+            total_tokens=r.usage.total_tokens,
+        ),
+        retrieved=[
+            RetrievedChunk(
+                file_path=h.file_path,
+                start_line=h.start_line,
+                end_line=h.end_line,
+                score=h.score,
+            )
+            for h in outcome.hits
+        ],
+        trace=[
+            TraceStepModel(
+                index=s.index,
+                tool=s.tool,
+                arguments=s.arguments,
+                ok=s.ok,
+                result_preview=s.result_preview,
+                result_chars=s.result_chars,
+            )
+            for s in r.trace
+        ],
     )
 
 

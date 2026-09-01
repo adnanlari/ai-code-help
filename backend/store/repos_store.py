@@ -43,6 +43,14 @@ def _row(record) -> RepoRow:
     )
 
 
+async def get_by_id(repo_id: UUID) -> RepoRow | None:
+    row = await get_pool().fetchrow(
+        "select id, repo_url, commit_sha, status from repos where id = $1",
+        repo_id,
+    )
+    return _row(row) if row else None
+
+
 async def get_by_url_sha(repo_url: str, commit_sha: str) -> RepoRow | None:
     row = await get_pool().fetchrow(
         """

@@ -17,23 +17,10 @@ import asyncio
 import sys
 from uuid import UUID
 
-import voyageai
-
 from backend import db
 from backend.config import get_settings
+from backend.indexing.embed import embed_query
 from backend.store import chunks_store
-
-
-def embed_query(text: str) -> list[float]:
-    settings = get_settings()
-    client = voyageai.Client(api_key=settings.voyage_api_key or None)
-    resp = client.embed(
-        [text],
-        model=settings.embed_model,
-        input_type="query",  # <-- query side of the asymmetric pair
-        output_dimension=settings.embed_dim,
-    )
-    return resp.embeddings[0]
 
 
 async def main(argv: list[str]) -> int:
@@ -44,7 +31,7 @@ async def main(argv: list[str]) -> int:
     question = argv[1]
     k = get_settings().top_k
 
-    query_vec = embed_query(question)
+    query_vec = await embed_query(question)
 
     await db.connect()
     try:

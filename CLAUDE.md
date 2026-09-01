@@ -92,9 +92,9 @@ surfaced as a reasoning trace.
 
 Built: indexing pipeline + vector store; the LLM `LLMClient` strategy layer; the
 file tools + path-traversal guardrail + on-demand worktree; the tool-use loop;
-programmatic citation grounding (flag-only); `POST /ask` wiring it together. Not
-built yet: the reasoning-trace UI (Streamlit is still a placeholder), the eval
-harness, and structured cost/latency logging. See `README.md` for the status table.
+programmatic citation grounding (flag-only); structured JSON-lines event logging;
+`POST /ask` wiring it together. Not built yet: the reasoning-trace UI (Streamlit
+is still a placeholder) and the eval harness. See `README.md` for the status table.
 
 ### Indexing pipeline — `backend/indexing/`
 
@@ -187,14 +187,29 @@ returns `1 - distance` as the score, orders ascending so the HNSW index is used.
   determinism, read-only tool) is in the module docstring; the structured return
   leaves a retry policy addable later without touching this module.
 
+### Observability — `backend/obslog.py`
+
+`log_event(event, **fields)` appends one JSON object per line to
+`EVENTS_LOG_PATH` (default `logs/events.jsonl`, gitignored) and echoes it to
+stderr (`EVENTS_LOG_STDERR`). Never raises — a write failure is a warning.
+`service.run_qa` emits an `ask` event per request (`request_id`, timings
+`t_embed_ms`/`t_search_ms`/`t_worktree_ms`/`t_agent_ms`/`t_total_ms`,
+`iterations`, `stop_reason`, `tool_calls` breakdown, token counts,
+`est_cost_usd` via `llm/pricing.py`, `grounded` / `n_unverified`) and an
+`ask_error` on failure; `pipeline.index_repo` emits `index` / `index_error`.
+`request_id` is in the `/ask` response and in HTTP error details, so a log line
+correlates with a specific call. Aggregate with `jq` / pandas for cost totals,
+latency percentiles, and iteration-cap tuning.
+
 ### API — `backend/main.py`
 
 FastAPI with a `lifespan` that opens/closes the pool. Endpoints: `GET /health`
 (DB ping), `POST /index` (runs the full pipeline **synchronously** — a job queue
 is the noted production upgrade), `GET /repos/{repo_id}`, `POST /ask` (calls
-`run_qa`; maps `QAOutcome` → `AskResponse` = answer + `stop_reason` + iterations
-+ token `usage` + `retrieved` chunks + tool `trace` + `grounded` + per-citation
-`citations`; 404 / 409 / 502 for not-found / not-ready / git+LLM failures). Also
+`run_qa`; maps `QAOutcome` → `AskResponse` = `request_id` + answer +
+`stop_reason` + iterations + token `usage` + `retrieved` chunks + tool `trace` +
+`grounded` + per-citation `citations`; 404 / 409 / 502 for not-found / not-ready
+/ git+LLM failures, each with the `request_id` in the detail). Also
 synchronous — the request blocks for the whole tool loop. Request/response models
 in `backend/models.py`.
 

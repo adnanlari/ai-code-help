@@ -32,9 +32,9 @@ One adaptive pipeline, not "RAG mode vs. agent mode":
 | RAG-seeded agentic tool-use loop + iteration cap | ✅ |
 | `POST /ask` — retrieval → worktree → agent → answer + trace + token usage | ✅ |
 | Programmatic citation grounding (flag-only: `verified` / `unverified_lines` / `unverified_file`) | ✅ |
+| Structured event log (JSON lines: latency stages, tokens, est. cost, iterations, grounded) | ✅ |
 | Reasoning-trace UI (Streamlit chat) | ⬜ next |
 | Eval harness (golden set + retrieval overlap + LLM-as-judge) | ⬜ |
-| Structured cost / latency / iteration logging (JSON lines) | ⬜ |
 
 ## Stack
 
@@ -152,6 +152,7 @@ Request:
 Response `200`:
 ```json
 {
+  "request_id": "a1b2c3d4",
   "repo_id": "uuid",
   "question": "...",
   "answer": "... with path:line citations ...",
@@ -178,6 +179,34 @@ reported, not auto-corrected by re-prompting the model — deterministic, no ext
 token cost, and the reader decides. (Rationale in `backend/agent/citations.py`.)
 
 Errors: `404` repo unknown · `409` repo not `ready` · `502` git checkout or LLM provider failure.
+Every response and every error detail carries a `request_id` that matches a line in the event log.
+
+## Observability
+
+Every request appends one JSON object to `logs/events.jsonl` (path via
+`EVENTS_LOG_PATH`; also echoed to stderr unless `EVENTS_LOG_STDERR=false`):
+
+```json
+{"ts":"2026-09-02T10:15:03Z","event":"ask","request_id":"a1b2c3d4","repo_id":"308d…",
+ "model":"kimi-k2.6","iterations":3,"stop_reason":"answered",
+ "tool_calls":{"grep":1,"read_file":2},"n_tool_calls":3,
+ "input_tokens":8123,"output_tokens":412,"total_tokens":8535,"est_cost_usd":0.005557,
+ "grounded":true,"n_citations":4,"n_unverified":0,
+ "t_embed_ms":180.4,"t_search_ms":41.9,"t_worktree_ms":88.0,"t_agent_ms":9800.1,"t_total_ms":10110.4}
+```
+
+`ask` / `ask_error` per `/ask`; `index` / `index_error` per `/index`. Aggregate with `jq`:
+
+```bash
+jq -s 'map(select(.event=="ask")) | { runs: length,
+        spend_usd: (map(.est_cost_usd)|add),
+        avg_iters: (map(.iterations)|add/length),
+        grounded_rate: (map(select(.grounded))|length) / length }' logs/events.jsonl
+```
+
+This file is the raw input for the eval report (cost, latency percentiles,
+grounding rate) and for tuning `AGENT_MAX_ITERATIONS` from the `stop_reason` /
+`iterations` distribution rather than a guess.
 
 ## Dev
 
@@ -192,6 +221,7 @@ pytest
 backend/
   config.py            typed settings from .env
   db.py                asyncpg pool + pgvector codec registration
+  obslog.py            log_event() — JSON-lines structured event log
   models.py            Pydantic API models
   main.py              FastAPI app (/health, /index, /repos/{id}, /ask)
   indexing/
@@ -203,6 +233,7 @@ backend/
   llm/
     base.py            LLMClient interface + neutral Message/ToolSpec/LLMResponse
     kimi.py            KimiClient (OpenAI-compatible) — Message <-> OpenAI shape
+    pricing.py         approx token prices -> est_cost_usd for the event log
     __init__.py        _PROVIDERS registry + get_llm_client()
   agent/
     guardrail.py       safe_path() — path-traversal defence for tool paths
@@ -222,5 +253,5 @@ scripts/
 frontend/app.py        Streamlit placeholder
 migrations/            0001_init.sql, 0002_repo_claimed_at.sql
 tests/                 offline: chunk, filter, embed batching, llm translation,
-                       guardrail, tools, agent loop, agent service, citations
+                       guardrail, tools, agent loop, agent service, citations, obslog
 ```

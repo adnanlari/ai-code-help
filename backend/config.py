@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     # --- retrieval ---
     top_k: int = 5
 
+    # --- structured event log (one JSON object per line) ---
+    events_log_path: str = "logs/events.jsonl"
+    events_log_stderr: bool = True
+
 
 @lru_cache
 def get_settings() -> Settings:

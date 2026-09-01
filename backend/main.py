@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import FastAPI, HTTPException
 
@@ -72,24 +72,31 @@ async def ask(req: AskRequest) -> AskResponse:
     Runs synchronously (like /index): the request blocks for the whole tool loop.
     Production would stream the trace / move this to a task + websocket.
     """
+    rid = uuid4().hex[:8]
     try:
         outcome = await run_qa(
             req.repo_id,
             req.question,
             top_k=req.top_k,
             max_iterations=req.max_iterations,
+            request_id=rid,
         )
     except RepoNotFound as exc:
-        raise HTTPException(status_code=404, detail="repo not found") from exc
+        raise HTTPException(status_code=404, detail=f"repo not found (request_id={rid})") from exc
     except RepoNotReady as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(status_code=409, detail=f"{exc} (request_id={rid})") from exc
     except GitError as exc:
-        raise HTTPException(status_code=502, detail=f"could not check out repo: {exc}") from exc
+        raise HTTPException(
+            status_code=502, detail=f"could not check out repo: {exc} (request_id={rid})"
+        ) from exc
     except LLMError as exc:
-        raise HTTPException(status_code=502, detail=f"LLM provider error: {exc}") from exc
+        raise HTTPException(
+            status_code=502, detail=f"LLM provider error: {exc} (request_id={rid})"
+        ) from exc
 
     r = outcome.result
     return AskResponse(
+        request_id=outcome.request_id,
         repo_id=outcome.repo_id,
         question=outcome.question,
         answer=r.answer,

@@ -80,6 +80,7 @@ class CitationModel(BaseModel):
 
 
 class AskResponse(BaseModel):
+    request_id: str  # correlates with the JSON-lines event log
     repo_id: UUID
     question: str
     answer: str

@@ -9,15 +9,17 @@ the client poll GET /repos/{id} - noted in the README.
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from backend.config import get_settings
 from backend.indexing import clone
 from backend.indexing.chunk import Chunk, chunk_file
 from backend.indexing.embed import embed_documents
 from backend.indexing.filter import iter_source_files
+from backend.obslog import log_event, ms_since
 from backend.store import chunks_store, repos_store
 
 log = logging.getLogger("pipeline")
@@ -34,6 +36,19 @@ class IndexResult:
 
 async def index_repo(repo_url: str, ref: str = "HEAD") -> IndexResult:
     settings = get_settings()
+    rid = uuid4().hex[:8]
+    t_start = time.perf_counter()
+
+    def _emit(outcome: str, chunk_count: int) -> None:
+        log_event(
+            "index",
+            request_id=rid,
+            repo_url=repo_url,
+            commit_sha=commit_sha[:12],
+            outcome=outcome,
+            chunk_count=chunk_count,
+            t_total_ms=ms_since(t_start),
+        )
 
     # 1. Resolve the exact commit without downloading anything.
     commit_sha = clone.resolve_sha(repo_url, ref)
@@ -44,11 +59,13 @@ async def index_repo(repo_url: str, ref: str = "HEAD") -> IndexResult:
     if outcome is repos_store.ClaimOutcome.READY:
         count = await chunks_store.count_for_repo(row.id)
         log.info("cache hit: %s @ %s (%d chunks)", repo_url, commit_sha[:8], count)
+        _emit("cache_hit", count)
         return IndexResult(row.id, commit_sha, "ready", cached=True, chunk_count=count)
 
     if outcome is repos_store.ClaimOutcome.IN_PROGRESS:
         # A live job is already working on this exact repo+commit.
         log.info("index already in progress: %s @ %s", repo_url, commit_sha[:8])
+        _emit("in_progress", 0)
         return IndexResult(row.id, commit_sha, "indexing", cached=False, chunk_count=0)
 
     # 3. outcome is CREATED or RECLAIMED -> we own the row, do the work.
@@ -79,14 +96,24 @@ async def index_repo(repo_url: str, ref: str = "HEAD") -> IndexResult:
 
         await repos_store.mark_ready(row.id)
         log.info("indexed %s @ %s (%d chunks)", repo_url, commit_sha[:8], inserted)
+        _emit("reclaimed" if outcome is repos_store.ClaimOutcome.RECLAIMED else "indexed", inserted)
         return IndexResult(row.id, commit_sha, "ready", cached=False, chunk_count=inserted)
 
-    except BaseException:
+    except BaseException as exc:
         # BaseException (not just Exception) so a Ctrl-C / cancellation also
         # leaves the row as 'failed' rather than stuck in 'indexing'. We re-raise
         # immediately - this is only a status-cleanup hook.
         await repos_store.mark_failed(row.id)
         log.exception("indexing failed for %s @ %s", repo_url, commit_sha[:8])
+        log_event(
+            "index_error",
+            request_id=rid,
+            repo_url=repo_url,
+            commit_sha=commit_sha[:12],
+            error_type=type(exc).__name__,
+            error=str(exc)[:300],
+            t_total_ms=ms_since(t_start),
+        )
         raise
     finally:
         # Raw clone is disposable - drop it as soon as we've chunked + embedded.

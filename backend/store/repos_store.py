@@ -8,9 +8,22 @@ both injection-safe and lets Postgres cache the plan.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from uuid import UUID
 
 from backend.db import get_pool
+
+# An 'indexing' row older (by claimed_at) than this many minutes is assumed to be
+# from a crashed/interrupted run and may be retaken. Indexing a normal repo takes
+# seconds to a couple of minutes, so 15 is comfortably past any real live job.
+STALE_AFTER_MINUTES = 15
+
+
+class ClaimOutcome(str, Enum):
+    CREATED = "created"  # brand-new row - we own it, do the work
+    RECLAIMED = "reclaimed"  # was failed or stale - we reset it, do the work
+    IN_PROGRESS = "in_progress"  # a live job owns it - back off
+    READY = "ready"  # already indexed - cache hit
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,6 +32,15 @@ class RepoRow:
     repo_url: str
     commit_sha: str
     status: str  # 'indexing' | 'ready' | 'failed'
+
+
+def _row(record) -> RepoRow:
+    return RepoRow(
+        id=record["id"],
+        repo_url=record["repo_url"],
+        commit_sha=record["commit_sha"],
+        status=record["status"],
+    )
 
 
 async def get_by_url_sha(repo_url: str, commit_sha: str) -> RepoRow | None:
@@ -31,24 +53,36 @@ async def get_by_url_sha(repo_url: str, commit_sha: str) -> RepoRow | None:
         repo_url,
         commit_sha,
     )
-    return RepoRow(**dict(row)) if row else None
+    return _row(row) if row else None
 
 
-async def claim_for_indexing(repo_url: str, commit_sha: str) -> tuple[RepoRow, bool]:
-    """Atomically get-or-create the row for (repo_url, commit_sha).
+async def claim_for_indexing(
+    repo_url: str,
+    commit_sha: str,
+    stale_after_minutes: int = STALE_AFTER_MINUTES,
+) -> tuple[RepoRow, ClaimOutcome]:
+    """Get-or-create the row for (repo_url, commit_sha) and report what to do.
 
-    Returns (row, we_created_it). The INSERT ... ON CONFLICT DO NOTHING is the
-    race guard: if two requests hit a brand-new repo at once, exactly one INSERT
-    succeeds. The loser gets no row back from RETURNING and falls through to the
-    SELECT, picking up the winner's row instead of starting a second job.
+    Three atomic SQL statements, each relying on Postgres for correctness under
+    concurrency:
 
-    A pre-existing 'failed' row is reset to 'indexing' here so a retry can run.
+    1. INSERT ... ON CONFLICT DO NOTHING - the race guard. Two requests hitting
+       a brand-new repo at once: exactly one INSERT wins (CREATED); the loser
+       gets no row back and falls through.
+    2. UPDATE ... WHERE status='failed' OR stale - the retry path. Whoever's
+       WHERE clause still matches flips the row to 'indexing' and gets it back
+       (RECLAIMED); a second racer's WHERE no longer matches, so it gets nothing.
+    3. SELECT - the row is either already 'ready' (READY, cache hit) or being
+       worked on by a live job (IN_PROGRESS).
+
+    Only CREATED and RECLAIMED mean "you own this row, go index".
     """
     pool = get_pool()
+
     created = await pool.fetchrow(
         """
-        insert into repos (repo_url, commit_sha, status)
-        values ($1, $2, 'indexing')
+        insert into repos (repo_url, commit_sha, status, claimed_at)
+        values ($1, $2, 'indexing', now())
         on conflict (repo_url, commit_sha) do nothing
         returning id, repo_url, commit_sha, status
         """,
@@ -56,22 +90,37 @@ async def claim_for_indexing(repo_url: str, commit_sha: str) -> tuple[RepoRow, b
         commit_sha,
     )
     if created:
-        return RepoRow(**dict(created)), True
+        return _row(created), ClaimOutcome.CREATED
+
+    reclaimed = await pool.fetchrow(
+        """
+        update repos
+           set status = 'indexing', claimed_at = now(), indexed_at = null
+         where repo_url = $1 and commit_sha = $2
+           and (
+                status = 'failed'
+                or (
+                    status = 'indexing'
+                    and (
+                        claimed_at is null
+                        or claimed_at < now() - make_interval(mins => $3)
+                    )
+                )
+           )
+        returning id, repo_url, commit_sha, status
+        """,
+        repo_url,
+        commit_sha,
+        stale_after_minutes,
+    )
+    if reclaimed:
+        return _row(reclaimed), ClaimOutcome.RECLAIMED
 
     existing = await get_by_url_sha(repo_url, commit_sha)
-    assert existing is not None  # the conflicting row must exist
-    if existing.status == "failed":
-        await pool.execute(
-            "update repos set status = 'indexing', indexed_at = null where id = $1",
-            existing.id,
-        )
-        existing = RepoRow(
-            id=existing.id,
-            repo_url=existing.repo_url,
-            commit_sha=existing.commit_sha,
-            status="indexing",
-        )
-    return existing, False
+    assert existing is not None  # the conflicting row must still exist
+    if existing.status == "ready":
+        return existing, ClaimOutcome.READY
+    return existing, ClaimOutcome.IN_PROGRESS
 
 
 async def mark_ready(repo_id: UUID) -> None:

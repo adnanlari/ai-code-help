@@ -53,6 +53,14 @@ async def count_for_repo(repo_id: UUID) -> int:
     return int(val or 0)
 
 
+async def delete_for_repo(repo_id: UUID) -> int:
+    """Remove all chunks for a repo. Used before re-indexing a reclaimed row so a
+    partial prior run can't leave duplicate/orphan chunks behind."""
+    status = await get_pool().execute("delete from chunks where repo_id = $1", repo_id)
+    # asyncpg returns e.g. "DELETE 42"
+    return int(status.split()[-1]) if status.startswith("DELETE") else 0
+
+
 async def similarity_search(
     repo_id: UUID,
     query_embedding: list[float],

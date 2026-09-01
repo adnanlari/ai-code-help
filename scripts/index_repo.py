@@ -14,11 +14,14 @@ almost instantly with cached=True and makes zero embedding calls.
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 import time
 
 from backend import db
 from backend.indexing.pipeline import index_repo
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 
 async def main(argv: list[str]) -> int:

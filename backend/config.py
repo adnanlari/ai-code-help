@@ -34,6 +34,12 @@ class Settings(BaseSettings):
     # --- embeddings ---
     embed_model: str = "voyage-code-3"
     embed_dim: int = 1024
+    # Per-request batch budget (estimated tokens). Voyage's hard ceiling is ~120k.
+    embed_max_batch_tokens: int = 100_000
+    # Client-side account-limit throttle. 0 = off. Set to your Voyage tier's
+    # limits to avoid RateLimitError (no-payment-method free tier: rpm=3, tpm=10000).
+    embed_rpm: int = 0
+    embed_tpm: int = 0
 
     # --- retrieval ---
     top_k: int = 5

@@ -38,20 +38,24 @@ async def index_repo(repo_url: str, ref: str = "HEAD") -> IndexResult:
     # 1. Resolve the exact commit without downloading anything.
     commit_sha = clone.resolve_sha(repo_url, ref)
 
-    # 2. Cache / race-guard: get-or-create the repos row.
-    row, we_created = await repos_store.claim_for_indexing(repo_url, commit_sha)
+    # 2. Cache / race-guard: get-or-create the repos row and find out what to do.
+    row, outcome = await repos_store.claim_for_indexing(repo_url, commit_sha)
 
-    if not we_created and row.status == "ready":
+    if outcome is repos_store.ClaimOutcome.READY:
         count = await chunks_store.count_for_repo(row.id)
         log.info("cache hit: %s @ %s (%d chunks)", repo_url, commit_sha[:8], count)
         return IndexResult(row.id, commit_sha, "ready", cached=True, chunk_count=count)
 
-    if not we_created and row.status == "indexing":
-        # Another job is already working on this exact repo+commit.
+    if outcome is repos_store.ClaimOutcome.IN_PROGRESS:
+        # A live job is already working on this exact repo+commit.
         log.info("index already in progress: %s @ %s", repo_url, commit_sha[:8])
         return IndexResult(row.id, commit_sha, "indexing", cached=False, chunk_count=0)
 
-    # 3. Cache miss (we created the row, or reset a 'failed' one) -> do the work.
+    # 3. outcome is CREATED or RECLAIMED -> we own the row, do the work.
+    if outcome is repos_store.ClaimOutcome.RECLAIMED:
+        removed = await chunks_store.delete_for_repo(row.id)
+        log.info("reclaimed %s @ %s; cleared %d leftover chunks", repo_url, commit_sha[:8], removed)
+
     clone_path: Path | None = None
     try:
         clone_path = clone.shallow_clone(repo_url, ref, settings.workdir)
@@ -77,7 +81,10 @@ async def index_repo(repo_url: str, ref: str = "HEAD") -> IndexResult:
         log.info("indexed %s @ %s (%d chunks)", repo_url, commit_sha[:8], inserted)
         return IndexResult(row.id, commit_sha, "ready", cached=False, chunk_count=inserted)
 
-    except Exception:
+    except BaseException:
+        # BaseException (not just Exception) so a Ctrl-C / cancellation also
+        # leaves the row as 'failed' rather than stuck in 'indexing'. We re-raise
+        # immediately - this is only a status-cleanup hook.
         await repos_store.mark_failed(row.id)
         log.exception("indexing failed for %s @ %s", repo_url, commit_sha[:8])
         raise

@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     llm_provider: str = "kimi"  # key into backend.llm._PROVIDERS
     llm_temperature: float = 0.0
     llm_max_tokens: int = 2048
+    # Hard cap on tool-call rounds before the agent is forced to answer.
+    agent_max_iterations: int = 6
     # Kimi K2.6 (Moonshot) - OpenAI-compatible endpoint.
     kimi_api_key: str = ""
     kimi_base_url: str = "https://api.moonshot.ai/v1"

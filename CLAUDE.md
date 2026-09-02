@@ -212,17 +212,23 @@ latency percentiles, and iteration-cap tuning.
 FastAPI with a `lifespan` that opens/closes the pool. Endpoints: `GET /health`
 (DB ping), `POST /index` (runs the full pipeline **synchronously** — a job queue
 is the noted production upgrade), `GET /repos/{repo_id}`, `POST /ask` (calls
-`run_qa`; maps `QAOutcome` → `AskResponse` = `request_id` + answer +
+`run_qa`; maps `QAOutcome` → `AskResponse` = `request_id` + answer + `model` +
 `stop_reason` + iterations + token `usage` + `retrieved` chunks + tool `trace` +
 `grounded` + per-citation `citations`; 404 / 409 / 502 for not-found / not-ready
 / git+LLM failures, each with the `request_id` in the detail). Also
 synchronous — the request blocks for the whole tool loop. Request/response models
 in `backend/models.py`.
 
-### Frontend — `frontend/app.py`
+### Frontend — `frontend/`
 
 Streamlit, intentionally a thin HTTP client — no business logic, so it can be
-replaced without touching backend/agent code.
+replaced without touching backend/agent code. `app.py` is a flat sequence of
+`st.*` calls: sidebar (health ping, `POST /index` form, `top_k` / `max_iterations`
+sliders) + a `st.chat_input` loop that `POST`s `/ask` and renders the answer,
+grounding summary, citation badges (🟢/🟡/🔴 by status), reasoning trace, and
+retrieved chunks in expanders. `/ask` is stateless, so history is display-only
+(kept in `st.session_state`, never sent back). All pure formatting lives in
+`frontend/render.py` (no Streamlit import) and is unit-tested.
 
 ### Evals — `evals/`
 

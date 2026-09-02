@@ -100,6 +100,7 @@ async def ask(req: AskRequest) -> AskResponse:
         repo_id=outcome.repo_id,
         question=outcome.question,
         answer=r.answer,
+        model=r.model,
         stop_reason=r.stop_reason,
         iterations=r.iterations,
         usage=UsageModel(

@@ -84,6 +84,7 @@ class AskResponse(BaseModel):
     repo_id: UUID
     question: str
     answer: str
+    model: str  # the LLM that produced the answer
     stop_reason: str  # answered | max_iterations | empty_response
     iterations: int
     usage: UsageModel

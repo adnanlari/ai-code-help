@@ -34,7 +34,7 @@ One adaptive pipeline, not "RAG mode vs. agent mode":
 | Programmatic citation grounding (flag-only: `verified` / `unverified_lines` / `unverified_file`) | ✅ |
 | Structured event log (JSON lines: latency stages, tokens, est. cost, iterations, grounded) | ✅ |
 | Eval harness — golden set + retrieval overlap + LLM-as-judge + scorecard | ✅ |
-| Reasoning-trace UI (Streamlit chat) | ⬜ next |
+| Streamlit chat UI — answer + grounding badges + reasoning trace + retrieved chunks | ✅ |
 
 ## Stack
 
@@ -156,6 +156,7 @@ Response `200`:
   "repo_id": "uuid",
   "question": "...",
   "answer": "... with path:line citations ...",
+  "model": "kimi-k2.6",
   "stop_reason": "answered" | "max_iterations" | "empty_response",
   "iterations": 3,
   "usage": { "input_tokens": 8123, "output_tokens": 412, "total_tokens": 8535 },
@@ -285,9 +286,11 @@ evals/
   runner.py            index repo -> run_qa -> score, per case
   report.py            aggregate a scorecard + JSON dump
   run.py               CLI: python -m evals.run
-frontend/app.py        Streamlit placeholder
+frontend/
+  app.py               Streamlit chat UI (thin HTTP client, no business logic)
+  render.py            pure display formatters (unit-tested)
 migrations/            0001_init.sql, 0002_repo_claimed_at.sql
 tests/                 offline: chunk, filter, embed batching, llm translation,
                        guardrail, tools, agent loop, agent service, citations,
-                       obslog, evals (dataset / scorers / report)
+                       obslog, evals (dataset / scorers / report), frontend render
 ```

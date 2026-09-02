@@ -1,0 +1,137 @@
+# Golden eval set.
+#
+# Hand-written. `expected_files` / `expected_facts` are best-effort against the
+# PINNED ref below - verify them if a case's scores look wrong rather than
+# trusting the label. Facts are graded by paraphrase (LLM-as-judge), not string
+# match, so phrase them as the *idea* that must be present.
+#
+# kind:
+#   localized - answerable from the retrieved chunks alone (tests RAG quality)
+#   multihop  - needs the tool loop to read/grep across files (tests the agent)
+
+[repos.click]
+url = "https://github.com/pallets/click"
+ref = "8.1.7"
+
+[repos.wedding]
+url = "https://github.com/adnanlari/enchanted-weddings"
+ref = "948598474465fd61cbcba63e20e9dfa58ee243fc"
+
+# --- click -----------------------------------------------------------------
+
+[[cases]]
+id = "click-option-parsing"
+repo = "click"
+kind = "localized"
+question = "How does click turn argv into parsed options and arguments?"
+expected_files = ["src/click/parser.py"]
+expected_facts = [
+  "parser.py contains the parser that walks argv token by token",
+  "options are registered on the parser before parsing (e.g. add_option)",
+  "it handles long options (--name, --name=value) and short options (-n, -nvalue)",
+]
+
+[[cases]]
+id = "click-command-decorator"
+repo = "click"
+kind = "localized"
+question = "What does the @click.command decorator do to a function?"
+expected_files = ["src/click/decorators.py"]
+expected_facts = [
+  "it wraps the function in a Command object whose callback is the function",
+  "params attached by @click.option / @click.argument are collected (via __click_params__) and attached to the Command",
+]
+
+[[cases]]
+id = "click-param-types"
+repo = "click"
+kind = "localized"
+question = "How are parameter types like INT or Choice implemented in click?"
+expected_files = ["src/click/types.py"]
+expected_facts = [
+  "ParamType is the base class",
+  "each type implements convert() to coerce the string value, calling self.fail() on bad input",
+  "built-ins include Choice, IntRange, Path, File",
+]
+
+[[cases]]
+id = "click-styled-output"
+repo = "click"
+kind = "localized"
+question = "How does click produce coloured terminal output and how does it avoid colour codes in pipes?"
+expected_files = ["src/click/termui.py"]
+expected_facts = [
+  "style() wraps text in ANSI escape codes; secho() = style() + echo()",
+  "echo() strips ANSI codes when the stream is not a terminal",
+]
+
+[[cases]]
+id = "click-context-obj"
+repo = "click"
+kind = "multihop"
+question = "How does a subcommand get access to an object created by its parent group?"
+expected_files = ["src/click/core.py"]
+expected_facts = [
+  "Context has an `obj` attribute used to pass shared state down the command tree",
+  "ensure_object() / a passed obj sets it; a child Context inherits obj from its parent when not given one",
+]
+
+[[cases]]
+id = "click-help-generation"
+repo = "click"
+kind = "multihop"
+question = "How is the --help text for a command generated?"
+expected_files = ["src/click/core.py", "src/click/formatter.py"]
+expected_facts = [
+  "each Command has get_help()/format_help() methods",
+  "a HelpFormatter (formatter.py) assembles the usage line, options section and help text",
+  "the --help option is added automatically unless disabled",
+]
+
+[[cases]]
+id = "click-group-dispatch"
+repo = "click"
+kind = "multihop"
+question = "When you run `mycli sub --flag`, how does click find and invoke the `sub` command?"
+expected_files = ["src/click/core.py"]
+expected_facts = [
+  "a Group/MultiCommand resolves the name token to a registered Command (resolve_command / get_command)",
+  "a new Context is created for that command and invoke() runs its callback",
+]
+
+[[cases]]
+id = "click-shell-completion"
+repo = "click"
+kind = "multihop"
+question = "Where and how is shell tab-completion implemented in click?"
+expected_files = ["src/click/shell_completion.py"]
+expected_facts = [
+  "shell_completion.py has a ShellComplete base class with shell-specific subclasses (bash, zsh, fish)",
+  "completion is triggered by a _<PROG>_COMPLETE environment variable",
+  "it walks the command tree to produce completion items for the current word",
+]
+
+# --- wedding (tiny single-file repo) --------------------------------------
+
+[[cases]]
+id = "wedding-background-music"
+repo = "wedding"
+kind = "localized"
+question = "How is the background music implemented on this page?"
+expected_files = ["index.html"]
+expected_facts = [
+  "it uses the Web Audio API (AudioContext), not an <audio> element",
+  "a gain node controls volume and a lowpass BiquadFilter shapes the tone",
+  "playback is toggled by clicking the music button (#musicBtn)",
+]
+
+[[cases]]
+id = "wedding-envelope-intro"
+repo = "wedding"
+kind = "localized"
+question = "What happens when the visitor first opens the page, before they see the invitation?"
+expected_files = ["index.html"]
+expected_facts = [
+  "an intro overlay (#introOverlay) covers the page with a tap-to-open envelope",
+  "activating it hides the overlay / opens the envelope and reveals the invitation content",
+]

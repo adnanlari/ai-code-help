@@ -84,6 +84,7 @@ class AgentResult:
     iterations: int = 0
     stop_reason: str = "answered"  # answered | max_iterations | empty_response
     messages: list[Message] = field(default_factory=list)  # full transcript
+    model: str = ""  # the LLM that produced this answer
 
 
 _PREVIEW_CHARS = 240
@@ -127,7 +128,7 @@ async def run_agent(
             ),
         ),
     ]
-    result = AgentResult(answer="", messages=messages)
+    result = AgentResult(answer="", messages=messages, model=llm.model)
     specs = toolbox.specs
 
     for i in range(1, max_iterations + 1):

@@ -33,8 +33,8 @@ One adaptive pipeline, not "RAG mode vs. agent mode":
 | `POST /ask` — retrieval → worktree → agent → answer + trace + token usage | ✅ |
 | Programmatic citation grounding (flag-only: `verified` / `unverified_lines` / `unverified_file`) | ✅ |
 | Structured event log (JSON lines: latency stages, tokens, est. cost, iterations, grounded) | ✅ |
+| Eval harness — golden set + retrieval overlap + LLM-as-judge + scorecard | ✅ |
 | Reasoning-trace UI (Streamlit chat) | ⬜ next |
-| Eval harness (golden set + retrieval overlap + LLM-as-judge) | ⬜ |
 
 ## Stack
 
@@ -208,6 +208,34 @@ This file is the raw input for the eval report (cost, latency percentiles,
 grounding rate) and for tuning `AGENT_MAX_ITERATIONS` from the `stop_reason` /
 `iterations` distribution rather than a guess.
 
+## Evals
+
+Offline quality harness over a hand-written golden set (`evals/golden.toml`): ~10
+questions across `pallets/click` and the wedding repo, each tagged `localized`
+(answerable from RAG alone) or `multihop` (needs the tool loop), with
+`expected_files` and `expected_facts`.
+
+```bash
+python -m evals.run                 # whole set, with the LLM judge
+python -m evals.run --no-judge      # retrieval + system metrics only (no judge calls)
+python -m evals.run --repo click --kind multihop
+python -m evals.run --min-pass 0.8  # exit non-zero if answer pass rate < 0.8 (CI gate)
+```
+
+Two scorers per case:
+
+- **Retrieval** (mechanical) — recall / precision of `expected_files` vs. the
+  files actually used (RAG hits ∪ files the agent read/grepped). `seed_recall`
+  isolates RAG alone, so a low seed-recall + high recall means the tool loop
+  earned its keep.
+- **Answer** (LLM-as-judge) — one low-temperature model call scores the answer
+  against the required facts; PASS only if every fact is conveyed.
+
+Prints a scorecard (pass rate, grounded rate, retrieval recall, mean iterations,
+total cost, p50/p95 latency, localized-vs-multihop split, per-failure reasons)
+and writes `logs/eval-<timestamp>.json`. Needs `DATABASE_URL`, `VOYAGE_API_KEY`,
+`KIMI_API_KEY`. Scorer and report logic are unit-tested with fakes.
+
 ## Dev
 
 ```bash
@@ -250,8 +278,16 @@ scripts/
   index_repo.py        index one repo from the CLI
   query_vectors.py     manual similarity query (retrieval only)
   reset_repo.py        wipe a repo's index (dev helper)
+evals/
+  golden.toml          hand-written golden set (localized + multihop cases)
+  dataset.py           load + validate the golden set
+  scorers.py           score_retrieval (mechanical) + judge_answer (LLM-as-judge)
+  runner.py            index repo -> run_qa -> score, per case
+  report.py            aggregate a scorecard + JSON dump
+  run.py               CLI: python -m evals.run
 frontend/app.py        Streamlit placeholder
 migrations/            0001_init.sql, 0002_repo_claimed_at.sql
 tests/                 offline: chunk, filter, embed batching, llm translation,
-                       guardrail, tools, agent loop, agent service, citations, obslog
+                       guardrail, tools, agent loop, agent service, citations,
+                       obslog, evals (dataset / scorers / report)
 ```

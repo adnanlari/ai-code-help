@@ -75,6 +75,11 @@ streamlit run frontend/app.py             # UI (expects the API already up)
 # full Q&A once the server is up (needs KIMI_API_KEY too):
 curl -s localhost:8000/ask -H 'content-type: application/json' \
   -d '{"repo_id": "<uuid>", "question": "how does X work?"}' | jq
+
+# eval harness (needs DATABASE_URL + VOYAGE_API_KEY + KIMI_API_KEY):
+python -m evals.run                    # whole golden set, with LLM judge
+python -m evals.run --no-judge         # retrieval + system metrics only, no judge calls
+python -m evals.run --repo click --kind multihop --limit 2   # filtered subset
 ```
 
 Tests run offline (no DB / Voyage / git / LLM). Anything touching those needs
@@ -93,8 +98,9 @@ surfaced as a reasoning trace.
 Built: indexing pipeline + vector store; the LLM `LLMClient` strategy layer; the
 file tools + path-traversal guardrail + on-demand worktree; the tool-use loop;
 programmatic citation grounding (flag-only); structured JSON-lines event logging;
-`POST /ask` wiring it together. Not built yet: the reasoning-trace UI (Streamlit
-is still a placeholder) and the eval harness. See `README.md` for the status table.
+`POST /ask` wiring it together; the offline eval harness + golden set. Not built
+yet: the reasoning-trace UI (Streamlit is still a placeholder). See `README.md`
+for the status table.
 
 ### Indexing pipeline — `backend/indexing/`
 
@@ -217,6 +223,24 @@ in `backend/models.py`.
 
 Streamlit, intentionally a thin HTTP client — no business logic, so it can be
 replaced without touching backend/agent code.
+
+### Evals — `evals/`
+
+Offline harness against a hand-written golden set (`evals/golden.toml`, TOML via
+stdlib `tomllib`; ~10 cases over `pallets/click` + the wedding repo, each tagged
+`localized` (RAG alone should suffice) or `multihop` (needs the tool loop), with
+`expected_files` + `expected_facts`). `dataset.load_golden` parses + validates
+(unique ids, known repo, non-empty facts). `runner.run_suite` indexes each repo
+once then calls `service.run_qa` per case. Two scorers in `scorers.py`:
+`score_retrieval` (mechanical — recall/precision of `expected_files` vs. RAG hits
+∪ files the agent read; plus `seed_recall` = RAG-only) and `judge_answer`
+(LLM-as-judge — one low-temp `llm.complete(tools=())` call returning
+`{"facts":[...],"pass":bool,"reason":...}`, PASS iff every fact is conveyed).
+`report.py` aggregates a scorecard (pass rate, grounded rate, recall, mean
+iterations, cost, p50/p95 latency, localized-vs-multihop split) + a JSON dump to
+`logs/eval-<ts>.json`; `run.py` is the CLI (`--repo/--kind/--id/--limit/
+--no-judge/--min-pass` for a CI gate). Scorer/report logic is unit-tested with
+fakes; a full run needs the real credentials.
 
 ## Conventions
 
